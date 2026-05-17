@@ -1,130 +1,100 @@
-import json
-from uuid import uuid4
+# src/messenger.py
+"""
+Communication utilities for the Finance Purple/White Agent.
 
-import httpx
-from a2a.client import (
-    A2ACardResolver,
-    ClientConfig,
-    ClientFactory,
-    Consumer,
-)
-from a2a.types import (
-    Message,
-    Part,
-    Role,
-    TextPart,
-    DataPart,
-)
+Responsibilities:
+- Connect to MCP server over SSE.
+- Discover MCP tools.
+- Call MCP tools.
+- Hide MCP transport details from agent.py.
+"""
 
+from __future__ import annotations
 
-DEFAULT_TIMEOUT = 300
+import re
+from dataclasses import dataclass
+from typing import Any, Sequence
 
-
-def create_message(
-    *, role: Role = Role.user, text: str, context_id: str | None = None
-) -> Message:
-    return Message(
-        kind="message",
-        role=role,
-        parts=[Part(TextPart(kind="text", text=text))],
-        message_id=uuid4().hex,
-        context_id=context_id,
-    )
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 
 
-def merge_parts(parts: list[Part]) -> str:
-    chunks = []
-    for part in parts:
-        if isinstance(part.root, TextPart):
-            chunks.append(part.root.text)
-        elif isinstance(part.root, DataPart):
-            chunks.append(json.dumps(part.root.data, indent=2))
-    return "\n".join(chunks)
+@dataclass
+class MCPConnectionConfig:
+    """MCP SSE connection configuration."""
+
+    mcp_url: str
+    timeout: float = 600.0
+
+    @property
+    def sse_url(self) -> str:
+        """Normalize MCP URL to the /sse endpoint."""
+        if self.mcp_url.endswith("/sse"):
+            return self.mcp_url
+
+        match = re.match(r"http://([^:/]+):(\d+)", self.mcp_url)
+        if not match:
+            raise ValueError(f"Invalid MCP URL: {self.mcp_url}")
+
+        host = match.group(1)
+        port = int(match.group(2))
+
+        return f"http://{host}:{port}/sse"
 
 
-async def send_message(
-    message: str,
-    base_url: str,
-    context_id: str | None = None,
-    streaming: bool = False,
-    timeout: int = DEFAULT_TIMEOUT,
-    consumer: Consumer | None = None,
-):
-    """Returns dict with context_id, response and status (if exists)"""
-    async with httpx.AsyncClient(timeout=timeout) as httpx_client:
-        resolver = A2ACardResolver(httpx_client=httpx_client, base_url=base_url)
-        agent_card = await resolver.get_agent_card()
-        config = ClientConfig(
-            httpx_client=httpx_client,
-            streaming=streaming,
-        )
-        factory = ClientFactory(config)
-        client = factory.create(agent_card)
-        if consumer:
-            await client.add_event_consumer(consumer)
+class MCPToolClient:
+    """
+    Async MCP SSE client.
 
-        outbound_msg = create_message(text=message, context_id=context_id)
-        last_event = None
-        outputs = {"response": "", "context_id": None}
+    Usage:
+        async with MCPToolClient(mcp_url) as client:
+            tools = await client.list_tools()
+            result = await client.call_tool("tool_name", {"x": 1})
+    """
 
-        # if streaming == False, only one event is generated
-        async for event in client.send_message(outbound_msg):
-            last_event = event
+    def __init__(self, mcp_url: str, timeout: float = 600.0):
+        self.config = MCPConnectionConfig(mcp_url=mcp_url, timeout=timeout)
+        self._sse_context = None
+        self._session_context = None
+        self._session: ClientSession | None = None
 
-        match last_event:
-            case Message() as msg:
-                outputs["context_id"] = msg.context_id
-                outputs["response"] += merge_parts(msg.parts)
+    async def __aenter__(self) -> "MCPToolClient":
+        print(f"[PURPLE][MCP] Connecting to {self.config.sse_url}")
 
-            case (task, update):
-                outputs["context_id"] = task.context_id
-                outputs["status"] = task.status.state.value
-                msg = task.status.message
-                if msg:
-                    outputs["response"] += merge_parts(msg.parts)
-                if task.artifacts:
-                    for artifact in task.artifacts:
-                        outputs["response"] += merge_parts(artifact.parts)
+        self._sse_context = sse_client(self.config.sse_url, timeout=self.config.timeout)
+        read, write = await self._sse_context.__aenter__()
 
-            case _:
-                pass
+        self._session_context = ClientSession(read, write)
+        self._session = await self._session_context.__aenter__()
 
-        return outputs
+        await self._session.initialize()
 
+        print("[PURPLE][MCP] Initialized")
 
-class Messenger:
-    def __init__(self):
-        self._context_ids = {}
+        return self
 
-    async def talk_to_agent(
-        self,
-        message: str,
-        url: str,
-        new_conversation: bool = False,
-        timeout: int = DEFAULT_TIMEOUT,
-    ):
-        """
-        Communicate with another agent by sending a message and receiving their response.
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._session_context:
+            await self._session_context.__aexit__(exc_type, exc, tb)
 
-        Args:
-            message: The message to send to the agent
-            url: The agent's URL endpoint
-            new_conversation: If True, start fresh conversation; if False, continue existing conversation
-            timeout: Timeout in seconds for the request (default: 300)
+        if self._sse_context:
+            await self._sse_context.__aexit__(exc_type, exc, tb)
 
-        Returns:
-            str: The agent's response message
-        """
-        outputs = await send_message(
-            message=message,
-            base_url=url,
-            context_id=None if new_conversation else self._context_ids.get(url, None),
-            timeout=timeout,
-        )
-        if outputs.get("status", "completed") != "completed":
-            raise RuntimeError(f"{url} responded with: {outputs}")
-        self._context_ids[url] = outputs.get("context_id", None)
-        return outputs["response"]
+        self._session = None
 
-    def reset(self):
-        self._context_ids = {}
+    async def list_tools(self) -> Sequence[Any]:
+        """List available MCP tools."""
+        session = self._require_session()
+        tools_result = await session.list_tools()
+        return tools_result.tools
+
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        """Call one MCP tool."""
+        session = self._require_session()
+        return await session.call_tool(tool_name, arguments=arguments)
+
+    def _require_session(self) -> ClientSession:
+        if not self._session:
+            raise RuntimeError("MCPToolClient is not connected. Use it as an async context manager.")
+
+        return self._session
