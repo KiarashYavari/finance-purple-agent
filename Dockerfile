@@ -1,16 +1,25 @@
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm
+FROM python:3.11-slim
 
-RUN adduser agent
-USER agent
-WORKDIR /home/agent
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-COPY pyproject.toml uv.lock README.md ./
-COPY src src
+WORKDIR /app
 
-RUN \
-    --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
-    uv sync --locked
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["uv", "run", "src/server.py"]
-CMD ["--host", "0.0.0.0"]
-EXPOSE 9009
+COPY requirements.txt .
+
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY src ./src
+COPY utils ./utils
+
+EXPOSE 8080
+
+ENTRYPOINT ["python", "-m", "src.server"]
