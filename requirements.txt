@@ -28,10 +28,10 @@ google-api-core==2.30.3
 google-auth==2.53.0
 googleapis-common-protos==1.75.0
 greenlet==3.5.0
-grpcio==1.80.0
-grpcio-reflection==1.80.0
-grpcio-status==1.80.0
-grpcio-tools==1.80.0
+grpcio==1.71.0
+grpcio-reflection==1.71.0
+grpcio-status==1.71.0
+grpcio-tools==1.71.0
 h11==0.16.0
 hf-xet==1.5.0
 httpcore==1.0.9
