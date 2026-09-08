@@ -24,7 +24,6 @@ from datetime import datetime
 from typing import Any, Protocol, Sequence, Union
 
 from utils.llm_manager import safe_llm_call
-from utils.local_llm_wrapper import safe_local_llm_call
 
 
 class ToolLike(Protocol):
@@ -193,15 +192,36 @@ class FinancePurpleAgent:
     The MCP client is injected through the ToolClient protocol.
     """
 
+    # def __init__(self):
+    #     self.name = os.getenv("PURPLE_AGENT_NAME", "finance-purple-agent")
+
+    #     self.llm_model = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash-lite")
+    #     self.llm_api_key = os.getenv("LLM_API_KEY")
+    #     self.llm_use_local = bool(int(os.getenv("USE_LOCAL_LLM_WHITE", "0")))
+
+    #     self.max_iterations = int(os.getenv("WHITE_AGENT_MAX_ITER", "6"))
+    #     self.memory = ConversationMemory(max_history=10)
+    #
     def __init__(self):
-        self.name = os.getenv("PURPLE_AGENT_NAME", "finance-purple-agent")
+        self.name = os.getenv(
+            "PURPLE_AGENT_NAME", "finance-purple-agent",)
 
-        self.llm_model = os.getenv("LLM_MODEL", "gemini/gemini-2.5-flash-lite")
+        self.llm_model = os.getenv(
+            "LLM_MODEL", "gemini/gemini-2.5-flash-lite",)
+
         self.llm_api_key = os.getenv("LLM_API_KEY")
-        self.llm_use_local = bool(int(os.getenv("USE_LOCAL_LLM_WHITE", "1")))
 
-        self.max_iterations = int(os.getenv("WHITE_AGENT_MAX_ITER", "6"))
+        if not self.llm_api_key:
+            raise RuntimeError("LLM_API_KEY is missing from Purple agent environment.")
+
+        self.max_iterations = int(os.getenv("PURPLE_AGENT_MAX_ITER", "6"))
+
         self.memory = ConversationMemory(max_history=10)
+
+        print(
+            f"[PURPLE][LLM] model={self.llm_model}, "
+            f"api_key_available={bool(self.llm_api_key)}"
+        )
 
     async def answer_question(self, question: str, tool_client: ToolClient) -> str:
         """
@@ -327,53 +347,49 @@ class FinancePurpleAgent:
     async def _get_llm_decision(self, prompt: str) -> dict[str, Any]:
         """Ask the configured LLM for the next action."""
         try:
-            if self.llm_use_local:
-                response = await safe_local_llm_call(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a precise JSON-only assistant. Respond ONLY with valid JSON.",
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt + "\n\nRespond with ONLY JSON, nothing else.",
-                        },
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.1,
-                    component="white",
-                )
-            else:
-                response = await safe_llm_call(
-                    model=self.llm_model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a precise JSON-only assistant. Respond ONLY with valid JSON.",
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt + "\n\nRespond with ONLY JSON, nothing else.",
-                        },
-                    ],
-                    api_key=self.llm_api_key,
-                    response_format={"type": "json_object"},
-                    temperature=0.1,
-                )
+            response = await safe_llm_call(
+                model=self.llm_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a precise JSON-only assistant. "
+                            "Respond ONLY with valid JSON."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            prompt
+                            + "\n\nRespond with ONLY JSON, nothing else."
+                        ),
+                    },
+                ],
+                api_key=self.llm_api_key,
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
 
             response_text = response.choices[0].message.content
-            print(f"[PURPLE] LLM response preview: {response_text[:300]}")
+
+            print(
+                "[PURPLE] LLM response preview:",
+                response_text[:300],
+            )
 
             return json.loads(response_text)
 
         except json.JSONDecodeError as exc:
             print(f"[PURPLE] Invalid JSON from LLM: {exc}")
+
             return {
                 "action": "error",
                 "reasoning": "LLM returned invalid JSON",
             }
+
         except Exception as exc:
             print(f"[PURPLE] LLM call failed: {exc}")
+
             return {
                 "action": "error",
                 "reasoning": f"LLM call failed: {exc}",
@@ -394,32 +410,32 @@ Research completed:
 Provide a concise final answer based only on the data obtained.
 """
 
-        try:
-            if self.llm_use_local:
-                response = await safe_local_llm_call(
-                    messages=[
-                        {"role": "system", "content": "You are a precise financial assistant."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.1,
-                    component="white",
-                )
-            else:
-                response = await safe_llm_call(
-                    model=self.llm_model,
-                    messages=[
-                        {"role": "system", "content": "You are a precise financial assistant."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    api_key=self.llm_api_key,
-                    temperature=0.1,
-                )
+        # try:
+        #     if self.llm_use_local:
+        #         response = await safe_local_llm_call(
+        #             messages=[
+        #                 {"role": "system", "content": "You are a precise financial assistant."},
+        #                 {"role": "user", "content": prompt},
+        #             ],
+        #             temperature=0.1,
+        #             component="white",
+        #         )
+        #     else:
+        #         response = await safe_llm_call(
+        #             model=self.llm_model,
+        #             messages=[
+        #                 {"role": "system", "content": "You are a precise financial assistant."},
+        #                 {"role": "user", "content": prompt},
+        #             ],
+        #             api_key=self.llm_api_key,
+        #             temperature=0.1,
+        #         )
 
-            return response.choices[0].message.content.strip()
+        #     return response.choices[0].message.content.strip()
 
-        except Exception as exc:
-            print(f"[PURPLE] Final answer error: {exc}")
-            return "ERROR_GENERATING_ANSWER"
+        # except Exception as exc:
+        #     print(f"[PURPLE] Final answer error: {exc}")
+            # return "ERROR_GENERATING_ANSWER"
 
     def _build_initial_prompt(self, question: str, tools: Sequence[ToolLike]) -> str:
         """Build the first reasoning prompt."""
